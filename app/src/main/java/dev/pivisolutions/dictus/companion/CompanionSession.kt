@@ -15,6 +15,7 @@ data class CompanionStatus(
     val message: String? = null,
     // Uncopied text from earlier takes. Only the current transcript can be retried for insertion.
     val earlier: String? = null,
+    val lastCopied: String? = null,
 ) {
     val pendingText: String? get() = when {
         earlier == null -> transcript
@@ -43,14 +44,15 @@ class CompanionSession(
     private var inserted = false
 
     private fun publish(phase: CompanionPhase, transcript: String? = null, message: String? = null) {
-        mutableState.value = CompanionStatus(phase, transcript, message, state.value.earlier)
+        mutableState.value = CompanionStatus(phase, transcript, message, state.value.earlier, state.value.lastCopied)
     }
 
     fun start(): Boolean {
         if (state.value.busy || operation?.isActive == true) return false
         val id = ++generation
         inserted = false
-        mutableState.value = CompanionStatus(CompanionPhase.PREPARING, earlier = state.value.pendingText)
+        mutableState.value = CompanionStatus(CompanionPhase.PREPARING, earlier = state.value.pendingText,
+            lastCopied = state.value.lastCopied)
         operation = scope.launch {
             try {
                 begin()
@@ -79,8 +81,9 @@ class CompanionSession(
                 if (text.isNullOrBlank()) {
                     publish(CompanionPhase.ERROR, message = "recognition")
                 } else if (autoCopy()) {
-                    if (writeClipboard(text)) publish(CompanionPhase.IDLE)
-                    else publish(CompanionPhase.COMPLETED, text, "copy_failed")
+                    if (writeClipboard(text)) {
+                        mutableState.value = CompanionStatus(earlier = state.value.earlier, lastCopied = text)
+                    } else publish(CompanionPhase.COMPLETED, text, "copy_failed")
                 } else {
                     publish(CompanionPhase.INSERTING, text)
                     inserted = insert(text)
@@ -112,12 +115,12 @@ class CompanionSession(
 
     fun copyPending(): Boolean {
         if (state.value.busy) return false
-        val text = state.value.pendingText ?: return false
+        val text = state.value.pendingText ?: state.value.lastCopied ?: return false
         if (!writeClipboard(text)) {
             mutableState.value = state.value.copy(message = "copy_failed")
             return false
         }
-        mutableState.value = CompanionStatus()
+        mutableState.value = CompanionStatus(lastCopied = text)
         return true
     }
 

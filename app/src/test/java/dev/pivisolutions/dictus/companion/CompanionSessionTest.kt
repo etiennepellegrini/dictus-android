@@ -240,7 +240,7 @@ class CompanionSessionTest {
         assertEquals("first\n\nsecond", fake.status.pendingText)
         assertTrue(fake.session.copyPending())
         assertEquals(listOf("first\n\nsecond"), fake.copies)
-        assertFalse(fake.session.copyPending())
+        assertEquals("first\n\nsecond", fake.status.lastCopied)
     }
 
     @Test
@@ -254,7 +254,7 @@ class CompanionSessionTest {
             runCurrent()
             repeat(3) { fake.session.stop() }
             runCurrent()
-            assertEquals(CompanionStatus(), fake.status)
+            assertEquals(CompanionStatus(lastCopied = text), fake.status)
         }
         assertEquals(listOf("first", "second", "second"), fake.copies)
         assertTrue(fake.insertions.isEmpty())
@@ -385,7 +385,7 @@ class CompanionSessionTest {
         assertEquals(listOf("current words"), fake.copies)
         assertTrue(fake.insertions.isEmpty())
         assertEquals(releasesBeforeObsoleteCompletion + 1, fake.releaseCalls)
-        assertEquals(CompanionStatus(), fake.status)
+        assertEquals(CompanionStatus(lastCopied = "current words"), fake.status)
     }
 
     @Test
