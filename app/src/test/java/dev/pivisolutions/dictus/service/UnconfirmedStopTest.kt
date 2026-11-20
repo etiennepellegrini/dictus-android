@@ -36,7 +36,7 @@ class UnconfirmedStopTest {
         override var onEnergyUpdate: (() -> Unit)? = null
         var stopped = false
         var cancelled = false
-        override fun start(scope: CoroutineScope) = Unit
+        override fun start(scope: CoroutineScope) = true
         override fun stop(): FloatArray = samples.also { stopped = true }
         override fun cancel() {
             cancelled = true

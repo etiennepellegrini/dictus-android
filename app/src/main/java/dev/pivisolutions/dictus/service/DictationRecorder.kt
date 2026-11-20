@@ -13,7 +13,8 @@ import kotlinx.coroutines.launch
 interface AudioCapture {
     /** Called after each read chunk, once the waveform levels include it. */
     var onEnergyUpdate: (() -> Unit)?
-    fun start(scope: CoroutineScope)
+    /** Opens the microphone; false when it could not start recording. */
+    fun start(scope: CoroutineScope): Boolean
     fun stop(): FloatArray
     fun cancel()
     fun getEnergyHistory(): List<Float>
@@ -43,7 +44,15 @@ class DictationRecorder(
 
     val isCapturing: Boolean get() = current != null
 
-    fun start(source: DictationSource) {
+    /** True while [capture] is the live one: a late failure of a replaced capture is ignored. */
+    fun isCurrent(capture: AudioCapture): Boolean = current === capture
+
+    /**
+     * Start a capture for [source]. False when the microphone did not start; the capture stays
+     * current so the caller decides what to do (Companion discards it, keyboard/app keep their
+     * existing behaviour).
+     */
+    fun start(source: DictationSource): Boolean {
         cancel()
         val capture = newCapture(source)
         current = capture
@@ -54,7 +63,7 @@ class DictationRecorder(
                 state.value = DictationState.Recording(source, elapsedMs, capture.getEnergyHistory())
             }
         }
-        capture.start(scope)
+        val started = capture.start(scope)
         timerJob = scope.launch {
             while (isActive) {
                 delay(1000L)
@@ -63,6 +72,7 @@ class DictationRecorder(
                 state.value = DictationState.Recording(source, elapsedMs, capture.getEnergyHistory())
             }
         }
+        return started
     }
 
     /** Stop the live capture and return its samples; empty when nothing records. */

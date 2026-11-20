@@ -26,8 +26,11 @@ class DictationRecorderTest {
         var cancelled = false
         val isLive get() = started && !stopped && !cancelled
 
-        override fun start(scope: CoroutineScope) {
+        var startResult = true
+
+        override fun start(scope: CoroutineScope): Boolean {
             started = true
+            return startResult
         }
 
         override fun stop(): FloatArray {
@@ -63,6 +66,21 @@ class DictationRecorderTest {
         assertFalse(captures[0].isLive)
         assertTrue(captures[1].isLive)
         assertEquals(DictationSource.APP, (state.value as DictationState.Recording).source)
+    }
+
+    @Test
+    fun `a microphone that does not start is reported and cancel releases it`() = runTest(StandardTestDispatcher()) {
+        val recorder = DictationRecorder(backgroundScope, state) {
+            FakeCapture().also { it.startResult = false; captures += it }
+        }
+
+        assertFalse(recorder.start(DictationSource.APP))
+        assertTrue(recorder.isCurrent(captures[0]))
+
+        recorder.cancel()
+
+        assertFalse(recorder.isCapturing)
+        assertTrue(captures[0].cancelled)
     }
 
     @Test

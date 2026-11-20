@@ -205,6 +205,8 @@ android {
         applicationId = "dev.pivisolutions.dictus"
         minSdk = 29
         targetSdk = 36
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        manifestPlaceholders["dictusAppLabel"] = "Dictus"
         // versionCode and versionName come from git tags, see appVersionName above (#165).
         // Injected into BuildConfig so every log export names the exact commit (#112).
         buildConfigField("String", "GIT_SHA", "\"${gitOutput("git", "rev-parse", "--short=12", "HEAD")}\"")
@@ -232,6 +234,13 @@ android {
                 gb
             } ?: 6
             buildConfigField("int", "PARAKEET_MIN_RAM_GB", parakeetMinRamGb.toString())
+            // Companion validation on a phone that already has a release install:
+            //   ./gradlew assembleDebug -PdictusSideBySide=true
+            // installs "Dictus Companion Test" with its own application ID and data.
+            if (providers.gradleProperty("dictusSideBySide").orNull == "true") {
+                applicationIdSuffix = ".companiontest"
+                manifestPlaceholders["dictusAppLabel"] = "Dictus Companion Test"
+            }
         }
         release {
             buildConfigField("int", "PARAKEET_MIN_RAM_GB", "6")
@@ -405,5 +414,9 @@ dependencies {
     testImplementation(libs.androidx.test.ext.junit)
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.room.testing)
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:rules:1.6.1")
     debugImplementation(libs.compose.ui.test.manifest)
 }

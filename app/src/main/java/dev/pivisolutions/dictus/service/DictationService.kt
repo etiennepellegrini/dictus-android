@@ -6,12 +6,16 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.media.AudioManager
 import android.os.Binder
 import android.os.IBinder
+import android.os.Looper
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -24,6 +28,7 @@ import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dev.pivisolutions.dictus.R
 import dev.pivisolutions.dictus.audio.DictationSoundPlayer
+import dev.pivisolutions.dictus.companion.CompanionActionReceiver
 import dev.pivisolutions.dictus.core.logging.DictationTrace
 import dev.pivisolutions.dictus.core.preferences.PreferenceKeys
 import dev.pivisolutions.dictus.core.service.DictationController
@@ -44,9 +49,11 @@ import dev.pivisolutions.dictus.history.TranscriptionHistoryWriter
 import dev.pivisolutions.dictus.recording.LastTranscriptionStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -202,8 +209,198 @@ class DictationService : Service(), DictationController {
     private val recorder = DictationRecorder(serviceScope, _state) { source ->
         AudioCaptureManager(
             getSystemService(AudioManager::class.java),
-            if (source == DictationSource.APP) takeFiles.startLive() else null,
+            if (source == DictationSource.APP && !companionOwned) takeFiles.startLive() else null,
+        ).also { capture ->
+            capture.onCaptureFailure = { serviceScope.launch { onCaptureFailed(capture) } }
+        }
+    }
+
+    // ---------- Companion (keyboard-independent) dictation ----------
+    //
+    // WHY a lease: the keyboard/app path and Companion share one microphone and one engine.
+    // While Companion holds the lease, keyboard and app starts are refused, and Companion
+    // cannot take the lease while another dictation records, transcribes or is starting.
+    // All lease state is touched on the main thread only.
+    private var companionOwned = false
+    private var companionReleasing = false
+    private var companionJob: Job? = null
+    private val _companionFailure = MutableStateFlow<String?>(null)
+
+    /** Non-null once the live Companion capture failed or was stopped by the system. */
+    val companionFailure: StateFlow<String?> = _companionFailure.asStateFlow()
+
+    /**
+     * Companion transcriber: never downloads a model during a session, and keeps the text out
+     * of the debug log and of the Home screen's last transcription (Companion is ephemeral).
+     */
+    private val companionTranscriber by lazy {
+        DictationTranscriber(
+            ensureModel = { modelKey -> withContext(Dispatchers.IO) { modelManager.getModelPath(modelKey) } },
+            withProvider = { modelKey, modelPath, use -> withProviderForModel(modelKey, modelPath, use) },
+            wakeLock = transcriptionWakeLock,
+            lastTranscription = LastTranscriptionStore(),
+            recordTally = DictationTally(dataStore)::record,
+            recordDebugEntry = { },
         )
+    }
+
+    private var screenReceiverRegistered = false
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == Intent.ACTION_SCREEN_OFF && companionOwned) {
+                _companionFailure.value = "Dictation cancelled because the screen was locked"
+                cancelCompanionRecording()
+                releaseCompanion()
+            }
+        }
+    }
+
+    private fun requireMainThread() {
+        check(Looper.myLooper() == Looper.getMainLooper()) { "Dictation commands require Main" }
+    }
+
+    /** Idempotent lease acquisition; refused while any other dictation is pending or active. */
+    fun acquireCompanion(): Boolean {
+        requireMainThread()
+        if (companionReleasing) return false
+        if (companionOwned) return true
+        if (recorder.isCapturing || !DictationStartGuard.canStartNewDictation(_state.value, pendingStart)) {
+            return false
+        }
+        companionOwned = true
+        return true
+    }
+
+    /** Release the lease. A transcription still running is cancelled before others may start. */
+    fun releaseCompanion() {
+        requireMainThread()
+        if (!companionOwned || companionReleasing) return
+        val job = companionJob
+        if (job?.isActive == true) {
+            companionReleasing = true
+            job.cancel()
+            serviceScope.launch {
+                job.join()
+                companionOwned = false
+                companionReleasing = false
+            }
+        } else {
+            if (recorder.isCapturing) endCompanionCapture()
+            companionOwned = false
+        }
+    }
+
+    /**
+     * Call from the resumed, visible activation activity: the microphone foreground promotion
+     * happens before this returns. False when the lease is missing or the microphone failed.
+     */
+    fun startCompanionRecording(): Boolean {
+        requireMainThread()
+        if (!companionOwned || companionReleasing || recorder.isCapturing || pendingStart ||
+            _state.value != DictationState.Idle
+        ) return false
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            _companionFailure.value = "Microphone permission missing"
+            return false
+        }
+        _companionFailure.value = null
+        return try {
+            createNotificationChannel()
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                buildNotification(),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
+            )
+            takeSource = DictationSource.APP
+            check(recorder.start(DictationSource.APP)) { "Microphone capture could not start" }
+            if (soundEnabled) soundPlayer.playStart()
+            // Refresh the notification so it offers Stop now that the state is Recording.
+            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification())
+            true
+        } catch (failure: Exception) {
+            Timber.e(failure, "Unable to start Companion dictation")
+            _companionFailure.value = "Unable to start microphone recording"
+            endCompanionCapture()
+            false
+        }
+    }
+
+    /**
+     * Stop the Companion capture and transcribe it with the downloaded model only.
+     * The audio is consumed once; null means no usable text and requires a new recording.
+     * Never written to history, the debug log or the last-transcription store.
+     */
+    suspend fun confirmCompanionAndTranscribe(): String? = withContext(Dispatchers.Main.immediate) {
+        if (!companionOwned || companionReleasing || !recorder.isCapturing) return@withContext null
+        val job = serviceScope.async(start = CoroutineStart.UNDISPATCHED) {
+            val samples = recorder.stop()
+            try {
+                companionTranscriber.rejectBeforeEngine(samples) ?: run {
+                    if (soundEnabled) soundPlayer.playStop()
+                    _state.value = DictationState.Transcribing
+                    getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification())
+                    transcribeCompanionTake(samples)
+                }
+            } finally {
+                finishTranscription()
+            }
+        }
+        companionJob = job
+        try {
+            (job.await() as? TranscriptionOutcome.Transcribed)?.text
+        } catch (cancelled: CancellationException) {
+            job.cancel()
+            throw cancelled
+        } finally {
+            if (companionJob === job) companionJob = null
+        }
+    }
+
+    /** Cancel the Companion capture or transcription, if any; the lease is kept. */
+    fun cancelCompanionRecording() {
+        requireMainThread()
+        if (!companionOwned) return
+        companionJob?.cancel()
+        if (recorder.isCapturing) {
+            if (soundEnabled) soundPlayer.playCancel()
+            endCompanionCapture()
+        }
+    }
+
+    private suspend fun transcribeCompanionTake(samples: FloatArray): TranscriptionOutcome {
+        return try {
+            val prefs = dataStore.data.first()
+            val activeModelKey = prefs[PreferenceKeys.ACTIVE_MODEL] ?: ModelCatalog.DEFAULT_KEY
+            val engineLanguage = DictationLanguage.engineLanguage(prefs)
+            val dictation = DictationContext.from(prefs, engineLanguage, DictationSource.APP)
+            companionTranscriber.transcribe(samples, activeModelKey, dictation)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (e: Exception) {
+            Timber.e(e, "Companion transcription failed")
+            TranscriptionOutcome.Failed
+        }
+    }
+
+    private fun endCompanionCapture() {
+        discardRecording()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        DictationTrace.end()
+    }
+
+    /** A live capture that Android silenced or that failed to read. */
+    private fun onCaptureFailed(capture: AudioCapture) {
+        if (!recorder.isCurrent(capture) || _state.value !is DictationState.Recording) return
+        if (companionOwned) {
+            Timber.w("Companion microphone capture failed")
+            _companionFailure.value = "Microphone recording failed"
+            cancelCompanionRecording()
+        } else {
+            // Keyboard/app dictation keeps its existing behaviour: the user stops it.
+            Timber.w("Microphone capture failed during keyboard/app dictation")
+        }
     }
 
     private val unconfirmedStop by lazy {
@@ -222,12 +419,18 @@ class DictationService : Service(), DictationController {
     }
 
     override fun prewarmEngine() {
+        // A Companion session loads its model when it transcribes.
+        if (companionOwned) return
         if (prewarmJob?.isActive == true) return
         prewarmJob = serviceScope.launch(Dispatchers.Default) { prewarmActiveModel() }
     }
 
     override fun onCreate() {
         super.onCreate()
+        ContextCompat.registerReceiver(
+            this, screenReceiver, IntentFilter(Intent.ACTION_SCREEN_OFF), ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        screenReceiverRegistered = true
         soundPlayer = DictationSoundPlayer(applicationContext)
 
         // A take whose process was killed while it recorded or transcribed (#251). Nothing records
@@ -312,7 +515,7 @@ class DictationService : Service(), DictationController {
                     buildNotification(),
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
                 )
-                if (recorder.isCapturing || !DictationStartGuard.canStartNewDictation(_state.value)) {
+                if (companionOwned || recorder.isCapturing || !DictationStartGuard.canStartNewDictation(_state.value)) {
                     // Backstop (#237): a live dictation owns the microphone and the foreground.
                     Timber.w("ACTION_START refused: state=%s", _state.value::class.simpleName)
                     return START_NOT_STICKY
@@ -328,7 +531,10 @@ class DictationService : Service(), DictationController {
                 }
                 pendingStart = false
                 takeSource = pendingSource
-                recorder.start(pendingSource)
+                if (!recorder.start(pendingSource)) {
+                    // Existing keyboard/app behaviour is kept; only logged here.
+                    Timber.e("ACTION_START: microphone capture could not start")
+                }
                 if (soundEnabled) soundPlayer.playStart()
                 Timber.i(
                     "DictationService started foreground with ACTION_START: source=%s, t+=%dms",
@@ -337,6 +543,9 @@ class DictationService : Service(), DictationController {
                 )
             }
             ACTION_STOP -> {
+                // Companion takes are stopped through CompanionActionReceiver, never here,
+                // so they are not transcribed into history.
+                if (companionOwned) return START_NOT_STICKY
                 pendingStart = false
                 if (_state.value is DictationState.Transcribing) {
                     // Stopping now would tear down the transcription that holds the take.
@@ -375,6 +584,10 @@ class DictationService : Service(), DictationController {
             Timber.w("Recording start refused: source=%s, RECORD_AUDIO not granted", source)
             return false
         }
+        if (companionOwned) {
+            Timber.w("Recording start refused: source=%s, Companion dictation owns the microphone", source)
+            return false
+        }
         if (!DictationStartGuard.canStartNewDictation(_state.value, pendingStart)) {
             Timber.w(
                 "Recording start refused: source=%s, state=%s, pendingStart=%b",
@@ -406,6 +619,8 @@ class DictationService : Service(), DictationController {
      * @return FloatArray of captured audio samples, or empty array if not recording.
      */
     override fun stopRecording(): FloatArray {
+        // A keyboard/app caller cannot stop the Companion take it does not own.
+        if (companionOwned) return FloatArray(0)
         pendingStart = false
         val samples = recorder.stop()
         // The caller takes the samples: the service saves nothing of this take.
@@ -426,6 +641,8 @@ class DictationService : Service(), DictationController {
      * Returns to idle state without producing any audio output.
      */
     override fun cancelRecording() {
+        // A keyboard/app caller cannot cancel the Companion take it does not own.
+        if (companionOwned) return
         pendingStart = false
         if (soundEnabled) soundPlayer.playCancel()
         discardRecording()
@@ -446,6 +663,8 @@ class DictationService : Service(), DictationController {
      * Whisper aborts its decode and keeps the segments decoded so far (#173, #179).
      */
     override suspend fun confirmAndTranscribe(retention: TranscriptionRetention): TranscriptionOutcome {
+        // The Companion take is ephemeral and only confirmCompanionAndTranscribe may consume it.
+        if (companionOwned) return TranscriptionOutcome.Failed
         // 1. Stop recording and get audio samples
         pendingStart = false
         val samples = recorder.stop()
@@ -639,6 +858,24 @@ class DictationService : Service(), DictationController {
      * Body tap is a no-op (per user decision -- the IME is already visible).
      */
     private fun buildNotification(): Notification {
+        if (companionOwned) {
+            val recording = state.value is DictationState.Recording
+            fun actionIntent(action: String, requestCode: Int): PendingIntent = PendingIntent.getBroadcast(
+                this, requestCode,
+                Intent(this, CompanionActionReceiver::class.java).setAction(action),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle(getString(if (recording) R.string.companion_recording else R.string.companion_processing))
+                .setSmallIcon(R.drawable.ic_mic)
+                .setOngoing(true)
+            if (recording) {
+                notification.addAction(R.drawable.ic_stop, getString(R.string.companion_stop),
+                    actionIntent(CompanionActionReceiver.ACTION_STOP, 1))
+            }
+            return notification.addAction(0, getString(R.string.companion_cancel),
+                actionIntent(CompanionActionReceiver.ACTION_CANCEL, 2)).build()
+        }
         val stopIntent = Intent(this, DictationService::class.java).apply {
             action = ACTION_STOP
         }
@@ -660,6 +897,11 @@ class DictationService : Service(), DictationController {
     // Swiping Dictus away from Recents ends its dictation like the notification's Stop (#248).
     // A keyboard dictation does not belong to the app's task and keeps running.
     override fun onTaskRemoved(rootIntent: Intent?) {
+        // A Companion take belongs to the user's other app, not to Dictus's task.
+        if (companionOwned) {
+            super.onTaskRemoved(rootIntent)
+            return
+        }
         unconfirmedStop.stop(UnconfirmedStop.Reason.TASK_REMOVED, cleanupScope, ::finishTranscription)
             ?.let { unconfirmedJob = it }
         super.onTaskRemoved(rootIntent)
@@ -667,6 +909,18 @@ class DictationService : Service(), DictationController {
 
     override fun onDestroy() {
         super.onDestroy()
+        if (screenReceiverRegistered) {
+            unregisterReceiver(screenReceiver)
+            screenReceiverRegistered = false
+        }
+        // A Companion take is ephemeral: discard it rather than transcribe it into history.
+        if (companionOwned) {
+            _companionFailure.value = "Dictation service stopped"
+            companionJob?.cancel()
+            recorder.cancel()
+            _state.value = DictationState.Idle
+            companionOwned = false
+        }
         if (::soundPlayer.isInitialized) soundPlayer.release()
         // The cancelled transcription releases it in its finally; this covers a lock left held.
         transcriptionWakeLock.release()

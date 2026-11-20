@@ -87,6 +87,8 @@ fun SettingsScreen(
     onNavigateToLicences: () -> Unit = {},
     onNavigateToDebugLogs: () -> Unit = {},
     onNavigateToSoundSettings: () -> Unit = {},
+    // Companion setup section, supplied by the nav host (it needs Hilt view models).
+    companionSection: @Composable () -> Unit = {},
     onNavigateToTranscriptionDebug: () -> Unit = {},
 ) {
     val language by viewModel.language.collectAsState()
@@ -120,6 +122,8 @@ fun SettingsScreen(
                 .padding(start = 16.dp, top = 24.dp, end = 16.dp)
                 .semantics { heading() },
         )
+
+        companionSection()
 
         // ---------- SECTION: Transcription ----------
         SectionHeader(text = stringResource(R.string.settings_section_transcription))

@@ -9,14 +9,25 @@ import androidx.compose.foundation.background
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.activity.compose.BackHandler
+import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.datastore.core.DataStore
@@ -29,6 +40,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import dev.pivisolutions.dictus.R
 import dev.pivisolutions.dictus.core.preferences.PreferenceKeys
+import dev.pivisolutions.dictus.companion.settings.CompanionSettingsSection
 import dev.pivisolutions.dictus.core.service.DictationController
 import androidx.compose.material3.MaterialTheme
 import dev.pivisolutions.dictus.home.HomeScreen
@@ -192,6 +204,33 @@ private fun OnboardingScreen(
     val downloadNotice by viewModel.downloadNotice.collectAsState()
     val notificationRequest by viewModel.notificationRequest.collectAsState()
 
+    var companionSetup by rememberSaveable { mutableStateOf(false) }
+    var companionModels by rememberSaveable { mutableStateOf(false) }
+    val companionSetupState = rememberSaveableStateHolder()
+    BackHandler(enabled = companionSetup) {
+        if (companionModels) companionModels = false else companionSetup = false
+    }
+    if (companionSetup) {
+        Column(Modifier.fillMaxSize()) {
+            TextButton(onClick = {
+                if (companionModels) companionModels = false else companionSetup = false
+            }) { Text(stringResource(R.string.companion_back)) }
+            if (companionModels) {
+                ModelsScreen(dictationController = dictationController)
+            } else {
+                companionSetupState.SaveableStateProvider("companion_setup") {
+                    Column(Modifier.verticalScroll(rememberScrollState())) {
+                        CompanionSettingsSection(
+                            onboarding = true,
+                            onOpenModels = { companionModels = true },
+                        )
+                    }
+                }
+            }
+        }
+        return
+    }
+
     // The persisted step is still being read: the bare background, as AppNavHost does above.
     val step = currentStep ?: run {
         Box(
@@ -212,6 +251,8 @@ private fun OnboardingScreen(
         when (pageStep) {
             OnboardingStep.Welcome -> OnboardingWelcomeScreen(
                 onNext = onNext,
+                // Keyboard-independent Companion setup; leaves the system keyboard unchanged.
+                onCompanion = { companionSetup = true },
             )
             // Read with the step, so it is set whenever the step is.
             OnboardingStep.Language -> languageSetup?.let { setup ->
@@ -396,6 +437,11 @@ private fun MainTabsScreen(
                     },
                     onNavigateToSoundSettings = {
                         navController.navigate(AppDestination.SoundSettings.route)
+                    },
+                    companionSection = {
+                        CompanionSettingsSection(
+                            onOpenModels = { navController.navigate(AppDestination.Models.route) },
+                        )
                     },
                     onNavigateToTranscriptionDebug = {
                         navController.navigate(AppDestination.TranscriptionDebug.route)

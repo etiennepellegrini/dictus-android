@@ -1,4 +1,5 @@
 # Gradle
+.tools/
 .gradle/
 build/
 .kotlin/
