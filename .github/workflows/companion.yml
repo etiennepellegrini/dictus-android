@@ -1,0 +1,62 @@
+name: Companion validation
+
+on:
+  push:
+    branches: [companion-v1.5]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: ${{ matrix.ref }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: [companion-autocopy, companion-v1.5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref == 'companion-v1.5' && github.sha || matrix.ref }}
+          fetch-depth: 0
+          submodules: recursive
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build side-by-side debug APK
+        run: ./gradlew assembleDebug -PdictusSideBySide=true
+
+      - name: Verify install identity and ARM64 libraries
+        run: |
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          tools="$ANDROID_HOME/build-tools/35.0.0"
+          "$tools/apksigner" verify "$apk"
+          "$tools/aapt" dump badging "$apk" > "$RUNNER_TEMP/badging.txt"
+          grep -F "package: name='dev.pivisolutions.dictus.companiontest'" "$RUNNER_TEMP/badging.txt"
+          grep -Fx "application-label:'Dictus Companion Test'" "$RUNNER_TEMP/badging.txt"
+          grep "^native-code:" "$RUNNER_TEMP/badging.txt" | grep -F "'arm64-v8a'"
+          sha256sum "$apk"
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.ref == 'companion-v1.5'
+        with:
+          name: Dictus-Companion-Test
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Run unit tests and lint
+        if: "${{ !cancelled() }}"
+        run: ./gradlew --continue test lint
+
+      - uses: actions/upload-artifact@v4
+        if: "${{ !cancelled() }}"
+        with:
+          name: reports-${{ matrix.ref }}
+          path: |
+            **/build/test-results/**/TEST-*.xml
+            **/build/reports/lint-results-*.xml
