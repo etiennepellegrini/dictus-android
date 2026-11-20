@@ -11,6 +11,8 @@ import kotlinx.coroutines.launch
 
 /** The microphone capture [DictationRecorder] drives; [AudioCaptureManager] in production. */
 interface AudioCapture {
+    /** A capture failure can be reported before its Main-thread cancellation callback runs. */
+    val failed: Boolean get() = false
     /** Called after each read chunk, once the waveform levels include it. */
     var onEnergyUpdate: (() -> Unit)?
     /** Opens the microphone; false when it could not start recording. */
@@ -76,7 +78,11 @@ class DictationRecorder(
     }
 
     /** Stop the live capture and return its samples; empty when nothing records. */
-    fun stop(): FloatArray = release()?.stop() ?: FloatArray(0)
+    fun stop(requireComplete: Boolean = false): FloatArray {
+        val capture = release() ?: return FloatArray(0)
+        val samples = capture.stop()
+        return if (requireComplete && capture.failed) FloatArray(0) else samples
+    }
 
     /** Discard the live capture, if any. */
     fun cancel() {

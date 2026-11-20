@@ -50,6 +50,8 @@ class AudioCaptureManager(
 
     private var recorder: AudioRecord? = null
     private var captureJob: Job? = null
+    @Volatile override var failed = false
+        private set
     @Volatile private var stopping = false
     private var recordingCallback: AudioManager.AudioRecordingCallback? = null
     private var failureMonitor: AudioCaptureFailureMonitor? = null
@@ -79,6 +81,7 @@ class AudioCaptureManager(
      */
     override fun start(scope: CoroutineScope): Boolean {
         stopping = false
+        failed = false
         val minBufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT)
         if (minBufferSize <= 0) {
             Timber.e("AudioRecord.getMinBufferSize returned $minBufferSize -- device may not support ENCODING_PCM_FLOAT")
@@ -107,7 +110,10 @@ class AudioCaptureManager(
             val routeResult = audioManager?.let { manager ->
                 preferBuiltInMicrophone(AndroidAudioInputRouteBackend(manager, rec))
             } ?: AudioInputRouteResult.NoBuiltInMic
-            val monitor = AudioCaptureFailureMonitor(rec.audioSessionId) { onCaptureFailure?.invoke() }
+            val monitor = AudioCaptureFailureMonitor(rec.audioSessionId) {
+                failed = true
+                onCaptureFailure?.invoke()
+            }
             failureMonitor = monitor
             val callback = object : AudioManager.AudioRecordingCallback() {
                 override fun onRecordingConfigChanged(configs: MutableList<AudioRecordingConfiguration>) {
