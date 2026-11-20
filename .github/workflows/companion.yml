@@ -70,3 +70,48 @@ jobs:
           path: |
             **/build/test-results/**/TEST-*.xml
             **/build/reports/lint-results-*.xml
+
+  instrumentation:
+    name: API 35 instrumentation (${{ matrix.ref }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: [companion-autocopy, companion-v1.5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref == 'companion-v1.5' && github.sha || matrix.ref }}
+          submodules: recursive
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build emulator APKs and fetch the Tiny Whisper fixture
+        run: |
+          ./gradlew -Pdictus.emulatorAbi=true :app:assembleDebug :app:assembleDebugAndroidTest
+          curl --fail --location --retry 3 -o ggml-tiny.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.bin
+          echo 'be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21  ggml-tiny.bin' | sha256sum --check
+      - name: Allow emulator acceleration
+        run: sudo chmod a+rw /dev/kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          script: |
+            adb install -r app/build/outputs/apk/debug/app-debug.apk
+            adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+            python3 scripts/seed_companion_test_fixtures.py --serial emulator-5554 --model ggml-tiny.bin --audio third_party/whisper.cpp/samples/jfk.wav
+            adb shell cmd connectivity airplane-mode enable
+            adb shell svc wifi disable
+            adb shell am instrument -w -r -e offlineModel /data/user/0/dev.pivisolutions.dictus/files/models/ggml-tiny.bin -e offlineAudio /data/user/0/dev.pivisolutions.dictus/files/companion-tests/jfk.wav dev.pivisolutions.dictus.test/androidx.test.runner.AndroidJUnitRunner > instrumentation.txt
+            cat instrumentation.txt
+            grep -E '^OK \([1-9][0-9]* tests?\)' instrumentation.txt
+      - uses: actions/upload-artifact@v4
+        if: "${{ !cancelled() }}"
+        with:
+          name: instrumentation-${{ matrix.ref }}
+          path: instrumentation.txt
