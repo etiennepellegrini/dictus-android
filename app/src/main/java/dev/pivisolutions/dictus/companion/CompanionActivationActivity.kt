@@ -88,8 +88,12 @@ class CompanionActivationActivity : AppCompatActivity() {
                             else -> Text(stringResource(if (status.message == "inserted")
                                 R.string.companion_inserted else R.string.companion_controls_help))
                         }
-                        if (!status.busy) status.pendingText?.let { text ->
-                            Text(stringResource(if (status.message == "copy_failed") R.string.companion_copy_failed else R.string.companion_copy_warning))
+                        if (!status.busy) (status.pendingText ?: status.lastCopied)?.let { text ->
+                            Text(stringResource(when {
+                                status.message == "copy_failed" -> R.string.companion_copy_failed
+                                status.pendingText == null -> R.string.companion_copied
+                                else -> R.string.companion_copy_warning
+                            }))
                             SelectionContainer { Text(text) }
                             Button(onClick = coordinator::copyPending) { Text(stringResource(R.string.companion_copy)) }
                         }

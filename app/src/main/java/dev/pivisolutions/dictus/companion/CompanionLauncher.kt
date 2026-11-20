@@ -10,9 +10,11 @@ import dev.pivisolutions.dictus.R
 object CompanionLauncher {
     /** Capture while the selected field still owns focus, before opening recording controls. */
     fun captureAndLaunch(context: Context) {
-        EntryPointAccessors.fromApplication(context.applicationContext,
-            CompanionEntryPoint::class.java).companionCoordinator().captureTarget()
-        launch(context)
+        val coordinator = EntryPointAccessors.fromApplication(context.applicationContext,
+            CompanionEntryPoint::class.java).companionCoordinator()
+        val review = coordinator.state.value.pendingText != null
+        if (!review) coordinator.captureTarget()
+        launch(context, controls = review)
     }
 
     fun showOverlay(context: Context) {
@@ -26,12 +28,13 @@ object CompanionLauncher {
         context.stopService(Intent(context, CompanionOverlayService::class.java))
     }
 
-    fun launch(context: Context) {
+    fun launch(context: Context, controls: Boolean = false) {
         val coordinator = EntryPointAccessors.fromApplication(context.applicationContext,
             CompanionEntryPoint::class.java).companionCoordinator()
         coordinator.beginActivation()
         runCatching {
             context.startActivity(Intent(context, CompanionActivationActivity::class.java)
+                .putExtra(CompanionActivationActivity.EXTRA_CONTROLS, controls)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }.onFailure {
             if (!coordinator.state.value.busy && coordinator.state.value.pendingText == null) coordinator.dismiss()
