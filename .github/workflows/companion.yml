@@ -5,6 +5,10 @@ on:
     branches: [companion-v1.5]
   workflow_dispatch:
 
+concurrency:
+  group: companion-validation-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -22,6 +26,12 @@ jobs:
           ref: ${{ matrix.ref == 'companion-v1.5' && github.sha || matrix.ref }}
           fetch-depth: 0
           submodules: recursive
+      - name: Resolve the release used for versioning
+        if: matrix.ref == 'companion-v1.5'
+        run: |
+          git fetch --no-tags https://github.com/getdictus/dictus-android.git refs/tags/v1.5.0:refs/tags/v1.5.0
+          git merge-base --is-ancestor v1.5.0 HEAD
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
