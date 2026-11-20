@@ -276,11 +276,12 @@ class DictationService : Service(), DictationController {
         requireMainThread()
         if (!companionOwned || companionReleasing) return
         val job = companionJob
-        if (job?.isActive == true) {
+        if (job != null && !job.isCompleted) {
             companionReleasing = true
             job.cancel()
             serviceScope.launch {
                 job.join()
+                companionJob = null
                 companionOwned = false
                 companionReleasing = false
             }
@@ -334,8 +335,8 @@ class DictationService : Service(), DictationController {
     suspend fun confirmCompanionAndTranscribe(): String? = withContext(Dispatchers.Main.immediate) {
         if (!companionOwned || companionReleasing || !recorder.isCapturing) return@withContext null
         val job = serviceScope.async(start = CoroutineStart.UNDISPATCHED) {
-            val samples = recorder.stop()
             try {
+                val samples = recorder.stop()
                 companionTranscriber.rejectBeforeEngine(samples) ?: run {
                     if (soundEnabled) soundPlayer.playStop()
                     _state.value = DictationState.Transcribing
@@ -353,7 +354,7 @@ class DictationService : Service(), DictationController {
             job.cancel()
             throw cancelled
         } finally {
-            if (companionJob === job) companionJob = null
+            if (companionJob === job && job.isCompleted) companionJob = null
         }
     }
 

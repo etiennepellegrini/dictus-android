@@ -17,6 +17,7 @@ data class CompanionSettingsState(
     val loaded: Boolean = false,
     val enabled: Boolean = false,
     val floating: Boolean = false,
+    val autoCopy: Boolean = false,
     val automaticInsertion: Boolean = false,
     val dockRight: Boolean = true,
     val haptics: Boolean = true,
@@ -32,6 +33,7 @@ class CompanionSettingsViewModel @Inject constructor(
             loaded = true,
             enabled = it[PreferenceKeys.COMPANION_ENABLED] ?: false,
             floating = it[PreferenceKeys.COMPANION_FLOATING] ?: false,
+            autoCopy = it[PreferenceKeys.COMPANION_AUTO_COPY] ?: false,
             automaticInsertion = it[PreferenceKeys.COMPANION_AUTOMATIC_INSERTION] ?: false,
             dockRight = it[PreferenceKeys.COMPANION_DOCK_RIGHT] ?: true,
             haptics = it[PreferenceKeys.HAPTICS_ENABLED] ?: true,
@@ -41,7 +43,17 @@ class CompanionSettingsViewModel @Inject constructor(
 
     fun setEnabled(value: Boolean) = set(PreferenceKeys.COMPANION_ENABLED, value)
     fun setFloating(value: Boolean) = set(PreferenceKeys.COMPANION_FLOATING, value)
-    fun setAutomaticInsertion(value: Boolean) = set(PreferenceKeys.COMPANION_AUTOMATIC_INSERTION, value)
+    fun setAutoCopy(value: Boolean) = setDelivery(PreferenceKeys.COMPANION_AUTO_COPY, PreferenceKeys.COMPANION_AUTOMATIC_INSERTION, value)
+    fun setAutomaticInsertion(value: Boolean) = setDelivery(PreferenceKeys.COMPANION_AUTOMATIC_INSERTION, PreferenceKeys.COMPANION_AUTO_COPY, value)
+
+    private fun setDelivery(key: Preferences.Key<Boolean>, other: Preferences.Key<Boolean>, enabled: Boolean) {
+        viewModelScope.launch {
+            dataStore.edit {
+                it[key] = enabled
+                if (enabled) it[other] = false
+            }
+        }
+    }
     fun setDockRight(value: Boolean) = set(PreferenceKeys.COMPANION_DOCK_RIGHT, value)
     fun setHaptics(value: Boolean) = set(PreferenceKeys.HAPTICS_ENABLED, value)
     fun setSound(value: Boolean) = set(PreferenceKeys.SOUND_ENABLED, value)

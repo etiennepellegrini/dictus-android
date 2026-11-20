@@ -142,7 +142,6 @@ class CompanionOverlayService : Service() {
                 when {
                     coordinator.state.value.phase == CompanionPhase.RECORDING -> coordinator.stop()
                     coordinator.state.value.busy -> Unit
-                    coordinator.state.value.transcript != null -> openResult()
                     else -> {
                         coordinator.captureTarget()
                         CompanionLauncher.launch(this@CompanionOverlayService)
@@ -269,14 +268,13 @@ class CompanionOverlayService : Service() {
             CompanionPhase.RECORDING -> R.string.companion_recording
             CompanionPhase.PREPARING, CompanionPhase.TRANSCRIBING, CompanionPhase.INSERTING -> R.string.companion_processing
             CompanionPhase.ERROR -> R.string.companion_error
-            else -> if (status.transcript != null) R.string.companion_result else R.string.companion_tap_start
+            else -> R.string.companion_tap_start
         }
         button?.apply {
             contentDescription = getString(description)
             setImageResource(when {
                 status.phase == CompanionPhase.RECORDING -> R.drawable.ic_stop
                 status.busy -> android.R.drawable.ic_popup_sync
-                status.transcript != null -> android.R.drawable.ic_menu_edit
                 else -> R.drawable.ic_mic
             })
             background = GradientDrawable().apply {
@@ -303,7 +301,7 @@ class CompanionOverlayService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         return NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_mic).setContentTitle(getString(R.string.companion_title))
-            .setContentText(getString(if (coordinator.state.value.transcript != null)
+            .setContentText(getString(if (coordinator.state.value.pendingText != null)
                 R.string.companion_result else R.string.companion_overlay_notification))
             .setContentIntent(result).setOngoing(true).build()
     }

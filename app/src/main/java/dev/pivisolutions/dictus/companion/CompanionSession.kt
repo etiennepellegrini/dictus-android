@@ -13,12 +13,19 @@ data class CompanionStatus(
     val phase: CompanionPhase = CompanionPhase.IDLE,
     val transcript: String? = null,
     val message: String? = null,
+    // Uncopied text from earlier takes. Only the current transcript can be retried for insertion.
+    val earlier: String? = null,
 ) {
+    val pendingText: String? get() = when {
+        earlier == null -> transcript
+        transcript == null -> earlier
+        else -> "$earlier\n\n$transcript"
+    }
     val busy get() = phase in setOf(CompanionPhase.PREPARING, CompanionPhase.RECORDING,
         CompanionPhase.TRANSCRIBING, CompanionPhase.INSERTING)
 }
 
-/** Platform-free single-flight session. The result stays in memory until explicit dismissal. */
+/** Platform-free single-flight session. Uncopied results stay in memory across recordings. */
 class CompanionSession(
     private val scope: CoroutineScope,
     private val begin: suspend () -> Unit,
@@ -26,6 +33,8 @@ class CompanionSession(
     private val insert: (String) -> Boolean,
     private val abort: () -> Unit,
     private val release: () -> Unit,
+    private val autoCopy: () -> Boolean,
+    private val copyToClipboard: (String) -> Unit,
 ) {
     private val mutableState = MutableStateFlow(CompanionStatus())
     val state = mutableState.asStateFlow()
@@ -33,22 +42,26 @@ class CompanionSession(
     private var generation = 0L
     private var inserted = false
 
+    private fun publish(phase: CompanionPhase, transcript: String? = null, message: String? = null) {
+        mutableState.value = CompanionStatus(phase, transcript, message, state.value.earlier)
+    }
+
     fun start(): Boolean {
-        if (state.value.busy || state.value.transcript != null || operation?.isActive == true) return false
+        if (state.value.busy || operation?.isActive == true) return false
         val id = ++generation
         inserted = false
-        mutableState.value = CompanionStatus(CompanionPhase.PREPARING)
+        mutableState.value = CompanionStatus(CompanionPhase.PREPARING, earlier = state.value.pendingText)
         operation = scope.launch {
             try {
                 begin()
-                if (generation == id) mutableState.value = CompanionStatus(CompanionPhase.RECORDING)
+                if (generation == id) publish(CompanionPhase.RECORDING)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
                 if (generation == id) {
                     abort()
                     release()
-                    mutableState.value = CompanionStatus(CompanionPhase.ERROR, message = "start")
+                    publish(CompanionPhase.ERROR, message = "start")
                 }
             }
         }
@@ -58,17 +71,20 @@ class CompanionSession(
     fun stop() {
         if (state.value.phase != CompanionPhase.RECORDING) return
         val id = generation
-        mutableState.value = CompanionStatus(CompanionPhase.TRANSCRIBING)
+        publish(CompanionPhase.TRANSCRIBING)
         operation = scope.launch {
             try {
                 val text = transcribe()
                 if (generation != id) return@launch
                 if (text.isNullOrBlank()) {
-                    mutableState.value = CompanionStatus(CompanionPhase.ERROR, message = "recognition")
+                    publish(CompanionPhase.ERROR, message = "recognition")
+                } else if (autoCopy()) {
+                    if (writeClipboard(text)) publish(CompanionPhase.IDLE)
+                    else publish(CompanionPhase.COMPLETED, text, "copy_failed")
                 } else {
-                    mutableState.value = CompanionStatus(CompanionPhase.INSERTING, text)
+                    publish(CompanionPhase.INSERTING, text)
                     inserted = insert(text)
-                    mutableState.value = CompanionStatus(CompanionPhase.COMPLETED,
+                    publish(CompanionPhase.COMPLETED,
                         transcript = if (inserted) null else text,
                         message = if (inserted) "inserted" else "copy")
                 }
@@ -87,21 +103,40 @@ class CompanionSession(
         }
     }
 
+    private fun writeClipboard(text: String): Boolean = try {
+        copyToClipboard(text)
+        true
+    } catch (_: RuntimeException) {
+        false
+    }
+
+    fun copyPending(): Boolean {
+        if (state.value.busy) return false
+        val text = state.value.pendingText ?: return false
+        if (!writeClipboard(text)) {
+            mutableState.value = state.value.copy(message = "copy_failed")
+            return false
+        }
+        mutableState.value = CompanionStatus()
+        return true
+    }
+
     fun retryInsertion() {
         val result = state.value.transcript ?: return
-        if (state.value.busy || inserted) return
-        mutableState.value = CompanionStatus(CompanionPhase.INSERTING, result)
+        if (state.value.busy || inserted || state.value.message == "copy_failed") return
+        publish(CompanionPhase.INSERTING, result)
         inserted = runCatching { insert(result) }.getOrDefault(false)
-        mutableState.value = CompanionStatus(CompanionPhase.COMPLETED,
+        publish(CompanionPhase.COMPLETED,
             if (inserted) null else result, if (inserted) "inserted" else "copy")
     }
 
     fun cancel() {
+        if (!state.value.busy) return
         ++generation
         operation?.cancel()
         abort()
         release()
-        mutableState.value = CompanionStatus(CompanionPhase.CANCELLED)
+        publish(CompanionPhase.CANCELLED)
     }
 
     fun fail() {
@@ -110,7 +145,7 @@ class CompanionSession(
         operation?.cancel()
         abort()
         release()
-        mutableState.value = CompanionStatus(CompanionPhase.ERROR, message = "capture")
+        publish(CompanionPhase.ERROR, message = "capture")
     }
 
     fun dismiss() {

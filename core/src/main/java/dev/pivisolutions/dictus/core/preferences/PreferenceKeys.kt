@@ -20,6 +20,7 @@ object PreferenceKeys {
     // Companion is opt-in. Copy mode needs neither accessibility nor overlay permission.
     val COMPANION_ENABLED = booleanPreferencesKey("companion_enabled")
     val COMPANION_FLOATING = booleanPreferencesKey("companion_floating")
+    val COMPANION_AUTO_COPY = booleanPreferencesKey("companion_auto_copy")
     val COMPANION_AUTOMATIC_INSERTION = booleanPreferencesKey("companion_automatic_insertion")
     val COMPANION_DOCK_RIGHT = booleanPreferencesKey("companion_dock_right")
     /** Vertical position as a fraction of available screen height (0..1). */

@@ -61,6 +61,22 @@ class CompanionSettingsSectionTest {
         }
     }
 
+    @Test fun `auto copy defaults off and enabling it needs no accessibility intent`() {
+        viewModel.setEnabled(true)
+        assertFalse(viewModel.state.value.autoCopy)
+        compose.setContent {
+            DictusTheme {
+                Column(Modifier.verticalScroll(rememberScrollState())) { CompanionSettingsSection(viewModel) }
+            }
+        }
+        compose.onNodeWithText("Automatically copy transcriptions").performScrollTo().performClick()
+        compose.runOnIdle {
+            assertTrue(store.data.value[PreferenceKeys.COMPANION_AUTO_COPY] == true)
+            assertFalse(viewModel.state.value.automaticInsertion)
+            assertNull(shadowOf(ApplicationProvider.getApplicationContext<Application>()).nextStartedActivity)
+        }
+    }
+
     @Test fun `copy choice dismisses consent without opening Accessibility settings`() {
         viewModel.setEnabled(true)
         compose.setContent {
