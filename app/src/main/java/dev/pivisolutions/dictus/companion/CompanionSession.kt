@@ -1,5 +1,6 @@
 package dev.pivisolutions.dictus.companion
 
+import dev.pivisolutions.dictus.core.service.TranscriptionOutcome
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -30,7 +31,7 @@ data class CompanionStatus(
 class CompanionSession(
     private val scope: CoroutineScope,
     private val begin: suspend () -> Unit,
-    private val transcribe: suspend () -> String?,
+    private val transcribe: suspend () -> TranscriptionOutcome?,
     private val insert: (String) -> Boolean,
     private val abort: () -> Unit,
     private val release: () -> Unit,
@@ -76,7 +77,8 @@ class CompanionSession(
         publish(CompanionPhase.TRANSCRIBING)
         operation = scope.launch {
             try {
-                val text = transcribe()
+                // A timeout can return TranscriptionOutcome.Partial with real words but a missing ending.
+                val text = (transcribe() as? TranscriptionOutcome.Text)?.text
                 if (generation != id) return@launch
                 if (text.isNullOrBlank()) {
                     publish(CompanionPhase.ERROR, message = "recognition")

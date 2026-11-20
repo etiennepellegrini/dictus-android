@@ -21,6 +21,7 @@ class DictationRecorderTest {
 
     private class FakeCapture(private val samples: FloatArray = floatArrayOf(0.1f, 0.2f)) : AudioCapture {
         override var onEnergyUpdate: (() -> Unit)? = null
+        override var failed = false
         var started = false
         var stopped = false
         var cancelled = false
@@ -131,6 +132,18 @@ class DictationRecorderTest {
 
         // A second stop, the keyboard's ✓ after the app's stop in the issue, finds nothing.
         assertEquals(0, recorder.stop().size)
+    }
+
+    @Test
+    fun `Companion stop rejects samples from a failed capture and releases the microphone`() = runTest {
+        val recorder = recorder(backgroundScope)
+        recorder.start(DictationSource.APP)
+        captures.last().failed = true
+        assertTrue(recorder.stop(requireComplete = true).isEmpty())
+        assertTrue(captures.last().stopped)
+        assertFalse(recorder.isCapturing)
+        recorder.start(DictationSource.APP)
+        assertArrayEquals(floatArrayOf(0.1f, 0.2f), recorder.stop(requireComplete = true), 0f)
     }
 
     @Test

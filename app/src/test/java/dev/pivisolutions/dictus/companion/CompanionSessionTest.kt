@@ -1,5 +1,6 @@
 package dev.pivisolutions.dictus.companion
 
+import dev.pivisolutions.dictus.core.service.TranscriptionOutcome
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -262,6 +263,24 @@ class CompanionSessionTest {
     }
 
     @Test
+    fun `partial recognition can never replace the last clipboard result`() = runTest {
+        val fake = SessionFake(this)
+        fake.autoCopy = true
+        fake.prepared.complete(Unit)
+        for (outcome in listOf(TranscriptionOutcome.Text("whole take"), TranscriptionOutcome.Partial("cut off"))) {
+            fake.outcome = outcome
+            assertTrue(fake.session.start())
+            runCurrent()
+            fake.session.stop()
+            runCurrent()
+        }
+        assertEquals(CompanionPhase.ERROR, fake.status.phase)
+        assertEquals("whole take", fake.status.lastCopied)
+        assertEquals(listOf("whole take"), fake.copies)
+        assertTrue(fake.insertions.isEmpty())
+    }
+
+    @Test
     fun `clipboard failure keeps original text when next auto copy succeeds`() = runTest {
         val fake = SessionFake(this)
         fake.autoCopy = true
@@ -504,6 +523,7 @@ class CompanionSessionTest {
         val copies = mutableListOf<String>()
         var autoCopy = false
         var copyFails = false
+        var outcome: TranscriptionOutcome? = null
         var insertResult = true
         var insertFailure: Exception? = null
         var onBegin: suspend () -> Unit = {}
@@ -521,7 +541,7 @@ class CompanionSessionTest {
             transcribe = {
                 transcribeCalls++
                 onTranscribe()
-                recognize()
+                outcome ?: recognize()?.let(TranscriptionOutcome::Text)
             },
             insert = { text ->
                 insertions += text

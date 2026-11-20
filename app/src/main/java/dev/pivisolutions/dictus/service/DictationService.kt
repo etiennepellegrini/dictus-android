@@ -323,11 +323,11 @@ class DictationService : Service(), DictationController {
      * The audio is consumed once; null means no usable text and requires a new recording.
      * Never written to history, the debug log or the last-transcription store.
      */
-    suspend fun confirmCompanionAndTranscribe(): String? = withContext(Dispatchers.Main.immediate) {
+    suspend fun confirmCompanionAndTranscribe(): TranscriptionOutcome? = withContext(Dispatchers.Main.immediate) {
         if (!companionOwned || companionReleasing || !recorder.isCapturing) return@withContext null
         val job = serviceScope.async(start = CoroutineStart.UNDISPATCHED) {
             try {
-                val samples = recorder.stop()
+                val samples = recorder.stop(requireComplete = true)
                 companionTranscriber.rejectBeforeEngine(samples) ?: run {
                     if (soundEnabled) soundPlayer.playStop()
                     _state.value = DictationState.Transcribing
@@ -340,7 +340,7 @@ class DictationService : Service(), DictationController {
         }
         companionJob = job
         try {
-            (job.await() as? TranscriptionOutcome.Transcribed)?.text
+            job.await()
         } catch (cancelled: CancellationException) {
             job.cancel()
             throw cancelled
