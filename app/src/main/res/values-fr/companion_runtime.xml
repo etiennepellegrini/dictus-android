@@ -14,10 +14,13 @@
     <string name="companion_start_error">Impossible de terminer la dictée. Vérifiez le microphone, le modèle téléchargé et les autorisations, puis réessayez.</string>
     <string name="companion_inserted">Texte inséré.</string>
     <string name="companion_controls_help">Gardez votre clavier habituel. Appui long sur le micro pour ces commandes.</string>
-    <string name="companion_copy_warning">Insertion automatique indisponible ou non vérifiée. Vérifiez le champ avant de coller pour éviter les doublons. Le texte reste ici jusqu’à sa fermeture explicite.</string>
+    <string name="companion_copy_warning">Les dictées non copiées restent ici jusqu’à leur copie ou leur suppression. Vérifiez le champ avant de coller.</string>
     <string name="companion_copy">Copier</string>
     <string name="companion_hide">Masquer le micro flottant</string>
     <string name="companion_settings">Paramètres</string>
     <string name="companion_return">Revenir à votre application</string>
     <string name="companion_dismiss">Fermer et effacer le résultat</string>
+    <string name="companion_auto_copy">Copier automatiquement les transcriptions</string>
+    <string name="companion_copied">Texte copié</string>
+    <string name="companion_copy_failed">Échec de la copie. Le texte reste disponible ici pour une copie manuelle.</string>
 </resources>

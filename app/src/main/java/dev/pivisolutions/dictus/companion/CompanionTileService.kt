@@ -54,6 +54,7 @@ class CompanionTileService : TileService() {
         coordinator.captureTarget()
         coordinator.beginActivation()
         val intent = Intent(this, CompanionActivationActivity::class.java)
+            .putExtra(CompanionActivationActivity.EXTRA_CONTROLS, coordinator.state.value.pendingText != null)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         runCatching {
             if (Build.VERSION.SDK_INT >= 34) {
@@ -64,7 +65,7 @@ class CompanionTileService : TileService() {
                 startActivityAndCollapse(intent)
             }
         }.onFailure {
-            if (coordinator.state.value.transcript == null) coordinator.dismiss()
+            if (coordinator.state.value.pendingText == null) coordinator.dismiss()
             Toast.makeText(this, R.string.companion_start_error, Toast.LENGTH_LONG).show()
         }
     }

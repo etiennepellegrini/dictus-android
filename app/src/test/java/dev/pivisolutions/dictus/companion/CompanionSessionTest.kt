@@ -77,6 +77,7 @@ class CompanionSessionTest {
     @Test
     fun `cancel during recording prevents transcription and insertion`() = runTest {
         val fake = SessionFake(this)
+        fake.autoCopy = true
         fake.prepared.complete(Unit)
         fake.session.start()
         runCurrent()
@@ -91,11 +92,13 @@ class CompanionSessionTest {
         assertTrue(fake.releaseCalls > 0)
         assertEquals(0, fake.transcribeCalls)
         assertTrue(fake.insertions.isEmpty())
+        assertTrue(fake.copies.isEmpty())
     }
 
     @Test
     fun `cancel during transcription discards pending result`() = runTest {
         val fake = SessionFake(this)
+        fake.autoCopy = true
         fake.prepared.complete(Unit)
         fake.session.start()
         runCurrent()
@@ -112,6 +115,7 @@ class CompanionSessionTest {
         // Cancellation and the transcription finally block may both release resources.
         assertTrue(fake.releaseCalls > 0)
         assertTrue(fake.insertions.isEmpty())
+        assertTrue(fake.copies.isEmpty())
     }
 
     @Test
@@ -132,6 +136,7 @@ class CompanionSessionTest {
     @Test
     fun `recognition exception reports error and releases without inserting`() = runTest {
         val fake = SessionFake(this)
+        fake.autoCopy = true
         fake.prepared.complete(Unit)
         fake.session.start()
         runCurrent()
@@ -143,12 +148,14 @@ class CompanionSessionTest {
         assertEquals(CompanionStatus(CompanionPhase.ERROR, message = "recognition"), fake.status)
         assertEquals(1, fake.releaseCalls)
         assertTrue(fake.insertions.isEmpty())
+        assertTrue(fake.copies.isEmpty())
     }
 
     @Test
     fun `null empty and whitespace recognition results never insert`() = runTest {
         for (text in listOf(null, "", " \n\t")) {
             val fake = SessionFake(this)
+            fake.autoCopy = true
             fake.prepared.complete(Unit)
             fake.recognized.complete(text)
             fake.session.start()
@@ -159,6 +166,7 @@ class CompanionSessionTest {
             assertEquals(CompanionStatus(CompanionPhase.ERROR, message = "recognition"), fake.status)
             assertEquals(1, fake.releaseCalls)
             assertTrue(fake.insertions.isEmpty())
+            assertTrue(fake.copies.isEmpty())
         }
     }
 
@@ -214,32 +222,69 @@ class CompanionSessionTest {
     }
 
     @Test
-    fun `manual fallback retains transcript and blocks new session until dismissal`() = runTest {
+    fun `manual results accumulate across recordings and cancellation until copied`() = runTest {
         val fake = SessionFake(this)
         fake.insertResult = false
         fake.prepared.complete(Unit)
-        fake.recognized.complete("copy these words")
+        for (text in listOf("first", "second")) {
+            fake.recognize = { text }
+            assertTrue(fake.session.start())
+            runCurrent()
+            fake.session.stop()
+            runCurrent()
+        }
+        assertTrue(fake.copies.isEmpty())
+        assertTrue(fake.session.start())
+        runCurrent()
+        fake.session.cancel()
+        assertEquals("first\n\nsecond", fake.status.pendingText)
+        assertTrue(fake.session.copyPending())
+        assertEquals(listOf("first\n\nsecond"), fake.copies)
+        assertFalse(fake.session.copyPending())
+    }
+
+    @Test
+    fun `auto copy writes each completed take once and immediately readies microphone`() = runTest {
+        val fake = SessionFake(this)
+        fake.autoCopy = true
+        fake.prepared.complete(Unit)
+        for (text in listOf("first", "second", "second")) {
+            fake.recognize = { text }
+            assertTrue(fake.session.start())
+            runCurrent()
+            repeat(3) { fake.session.stop() }
+            runCurrent()
+            assertEquals(CompanionStatus(), fake.status)
+        }
+        assertEquals(listOf("first", "second", "second"), fake.copies)
+        assertTrue(fake.insertions.isEmpty())
+        assertEquals(3, fake.releaseCalls)
+    }
+
+    @Test
+    fun `clipboard failure keeps original text when next auto copy succeeds`() = runTest {
+        val fake = SessionFake(this)
+        fake.autoCopy = true
+        fake.prepared.complete(Unit)
+        fake.copyFails = true
+        fake.recognize = { "keep me" }
         fake.session.start()
         runCurrent()
         fake.session.stop()
         runCurrent()
-
-        val retained = CompanionStatus(CompanionPhase.COMPLETED, "copy these words", "copy")
-        assertEquals(retained, fake.status)
-        repeat(3) {
-            assertFalse(fake.session.start())
-            fake.session.stop()
-        }
-        assertEquals(retained, fake.status)
-        assertEquals(1, fake.beginCalls)
-        assertEquals(listOf("copy these words"), fake.insertions)
-
-        fake.session.dismiss()
-        assertEquals(CompanionStatus(), fake.status)
+        assertEquals("copy_failed", fake.status.message)
+        assertFalse(fake.session.copyPending())
+        fake.copyFails = false
+        fake.recognize = { "new words" }
         assertTrue(fake.session.start())
         runCurrent()
-        assertEquals(2, fake.beginCalls)
-        assertEquals(CompanionPhase.RECORDING, fake.status.phase)
+        fake.session.stop()
+        runCurrent()
+        assertEquals(CompanionPhase.IDLE, fake.status.phase)
+        assertEquals("keep me", fake.status.pendingText)
+        assertEquals(listOf("new words"), fake.copies)
+        assertTrue(fake.session.copyPending())
+        assertEquals(listOf("new words", "keep me"), fake.copies)
     }
 
     @Test
@@ -276,7 +321,6 @@ class CompanionSessionTest {
             CompanionStatus(CompanionPhase.ERROR, "keep these words", "recognition"),
             fake.status,
         )
-        assertFalse(fake.session.start())
         assertEquals(1, fake.releaseCalls)
         fake.insertFailure = null
         fake.session.retryInsertion()
@@ -287,7 +331,7 @@ class CompanionSessionTest {
     }
 
     @Test
-    fun `throwing retry retains manual fallback and blocks new session`() = runTest {
+    fun `throwing retry keeps manual fallback available`() = runTest {
         val fake = SessionFake(this)
         fake.insertResult = false
         fake.prepared.complete(Unit)
@@ -301,13 +345,14 @@ class CompanionSessionTest {
         fake.session.retryInsertion()
 
         assertEquals(CompanionStatus(CompanionPhase.COMPLETED, "still available", "copy"), fake.status)
-        assertFalse(fake.session.start())
+        assertTrue(fake.session.start())
         assertEquals(listOf("still available", "still available"), fake.insertions)
     }
 
     @Test
     fun `cancelled obsolete recognition completion cannot insert into replacement session`() = runTest {
         val fake = SessionFake(this)
+        fake.autoCopy = true
         val obsoleteResult = CompletableDeferred<String?>()
         fake.recognize = { withContext(NonCancellable) { obsoleteResult.await() } }
         fake.prepared.complete(Unit)
@@ -329,6 +374,7 @@ class CompanionSessionTest {
         assertEquals(replacementStatus, fake.status)
         assertEquals(releasesBeforeObsoleteCompletion, fake.releaseCalls)
         assertTrue(fake.insertions.isEmpty())
+        assertTrue(fake.copies.isEmpty())
         fake.recognize = { fake.recognized.await() }
         fake.recognized.complete("current words")
         fake.session.stop()
@@ -336,9 +382,10 @@ class CompanionSessionTest {
 
         assertEquals(2, fake.beginCalls)
         assertEquals(2, fake.transcribeCalls)
-        assertEquals(listOf("current words"), fake.insertions)
+        assertEquals(listOf("current words"), fake.copies)
+        assertTrue(fake.insertions.isEmpty())
         assertEquals(releasesBeforeObsoleteCompletion + 1, fake.releaseCalls)
-        assertEquals(CompanionStatus(CompanionPhase.COMPLETED, message = "inserted"), fake.status)
+        assertEquals(CompanionStatus(), fake.status)
     }
 
     @Test
@@ -454,6 +501,9 @@ class CompanionSessionTest {
         var transcribeCalls = 0
         var abortCalls = 0
         var releaseCalls = 0
+        val copies = mutableListOf<String>()
+        var autoCopy = false
+        var copyFails = false
         var insertResult = true
         var insertFailure: Exception? = null
         var onBegin: suspend () -> Unit = {}
@@ -477,6 +527,11 @@ class CompanionSessionTest {
                 insertions += text
                 insertFailure?.let { throw it }
                 insertResult
+            },
+            autoCopy = { autoCopy },
+            copyToClipboard = {
+                if (copyFails) throw SecurityException("Clipboard unavailable")
+                copies += it
             },
             abort = { abortCalls++ },
             release = { releaseCalls++ },

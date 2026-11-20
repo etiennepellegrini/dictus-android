@@ -5,11 +5,15 @@ import android.app.KeyguardManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.os.Build
+import android.widget.Toast
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -62,6 +66,7 @@ class CompanionCoordinator @Inject constructor(
     private var connectionResult: CompletableDeferred<DictationService>? = null
     private var bound = false
     private var clients = 0
+    private var autoCopy = false
     private var automatic = false
     private var owned = false
     private var enabled = false
@@ -94,13 +99,14 @@ class CompanionCoordinator @Inject constructor(
         owned = false
         if (sessionStateHasNoResult()) clearTarget()
         maybeUnbind()
-    })
+    }, autoCopy = { autoCopy }, copyToClipboard = context::copyCompanionText)
     val state: StateFlow<CompanionStatus> get() = session.state
 
     init {
         scope.launch {
             dataStore.data.collect { prefs ->
                 enabled = prefs[PreferenceKeys.COMPANION_ENABLED] == true
+                autoCopy = prefs[PreferenceKeys.COMPANION_AUTO_COPY] == true
                 automatic = prefs[PreferenceKeys.COMPANION_AUTOMATIC_INSERTION] == true
                 if (!automatic) clearTarget()
                 if (!enabled && state.value.busy) cancel()
@@ -108,12 +114,12 @@ class CompanionCoordinator @Inject constructor(
         }
         scope.launch {
             state.collect { status ->
-                if (status.transcript != null) notifyResult() else {
+                if (!status.busy && status.pendingText != null) notifyResult() else {
                     context.getSystemService(NotificationManager::class.java).cancel(43)
                 }
                 if (!status.busy && status.transcript == null) clearTarget()
                 if (!status.busy) maybeUnbind()
-                if (status.phase == CompanionPhase.COMPLETED && status.transcript == null) scope.launch {
+                if (status.phase == CompanionPhase.COMPLETED && status.pendingText == null) scope.launch {
                     // A brief success indication; this timer does not authorize focus or recording.
                     delay(1200)
                     if (state.value === status) session.dismiss()
@@ -126,7 +132,7 @@ class CompanionCoordinator @Inject constructor(
 
     /** Call before launching the foreground activity, while the user's field still owns focus. */
     fun captureTarget() {
-        if (state.value.busy || state.value.transcript != null) return
+        if (state.value.busy) return
         captureRequested = true
         target = if (automatic) insertion.capture() else null
     }
@@ -139,10 +145,15 @@ class CompanionCoordinator @Inject constructor(
 
     /** Called only after the activation activity is resumed and has a visible window. */
     fun start(isVisible: () -> Boolean): Boolean {
-        if (state.value.busy || state.value.transcript != null) return false
+        if (state.value.busy) return false
         activationVisible = isVisible
         return session.start()
     }
+    fun copyPending() {
+        if (session.copyPending()) clearTarget()
+        else Toast.makeText(context, R.string.companion_copy_failed, Toast.LENGTH_SHORT).show()
+    }
+
     fun stop() = session.stop()
     fun cancel() { session.cancel(); clearTarget() }
     fun cancelActive() { if (state.value.busy) cancel() }
@@ -156,6 +167,7 @@ class CompanionCoordinator @Inject constructor(
         check(withContext(Dispatchers.IO) {
             ModelManager(context).getModelPath(prefs[PreferenceKeys.ACTIVE_MODEL] ?: ModelCatalog.DEFAULT_KEY)
         } != null)
+        autoCopy = prefs[PreferenceKeys.COMPANION_AUTO_COPY] == true
         automatic = prefs[PreferenceKeys.COMPANION_AUTOMATIC_INSERTION] == true
         // A home-screen invocation has no captured external target. It always offers Copy.
         if (!captureRequested || !automatic) clearTarget()
@@ -233,4 +245,11 @@ class CompanionCoordinator @Inject constructor(
             .setContentText(context.getString(R.string.companion_result_notification))
             .setContentIntent(open).setAutoCancel(false).build()) }
     }
+}
+
+internal fun Context.copyCompanionText(text: String) {
+    getSystemService(ClipboardManager::class.java)
+        .setPrimaryClip(ClipData.newPlainText(getString(R.string.companion_title), text))
+    // Android 13+ supplies the clipboard confirmation.
+    if (Build.VERSION.SDK_INT < 33) Toast.makeText(this, R.string.companion_copied, Toast.LENGTH_SHORT).show()
 }

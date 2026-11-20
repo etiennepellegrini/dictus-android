@@ -34,7 +34,7 @@ object CompanionLauncher {
             context.startActivity(Intent(context, CompanionActivationActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }.onFailure {
-            if (!coordinator.state.value.busy && coordinator.state.value.transcript == null) coordinator.dismiss()
+            if (!coordinator.state.value.busy && coordinator.state.value.pendingText == null) coordinator.dismiss()
             Toast.makeText(context, R.string.companion_start_error, Toast.LENGTH_LONG).show()
         }
     }

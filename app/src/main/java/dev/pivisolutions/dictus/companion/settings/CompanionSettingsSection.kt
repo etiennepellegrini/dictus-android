@@ -161,6 +161,7 @@ fun CompanionSettingsSection(
                     CompanionSwitch(R.string.companion_sound, state.sound, viewModel::setSound)
                     }
                     if (!onboarding || setupStep == 4) {
+                    CompanionSwitch(R.string.companion_auto_copy, state.autoCopy, viewModel::setAutoCopy)
                     CompanionSwitch(R.string.companion_automatic_insertion, state.automaticInsertion, { enabled ->
                         if (enabled) consent = true else viewModel.setAutomaticInsertion(false)
                     })

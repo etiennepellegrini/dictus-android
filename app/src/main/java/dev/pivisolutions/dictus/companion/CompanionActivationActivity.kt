@@ -1,8 +1,6 @@
 package dev.pivisolutions.dictus.companion
 
 import android.Manifest
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -68,7 +66,7 @@ class CompanionActivationActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         // Recreation or process recovery must never silently restart recording.
         controls = intent.getBooleanExtra(EXTRA_CONTROLS, false) || savedInstanceState != null ||
-            coordinator.state.value.transcript != null || coordinator.state.value.busy
+            coordinator.state.value.busy
         coordinator.retain()
         setContent {
             val status by coordinator.state.collectAsState()
@@ -90,18 +88,15 @@ class CompanionActivationActivity : AppCompatActivity() {
                             else -> Text(stringResource(if (status.message == "inserted")
                                 R.string.companion_inserted else R.string.companion_controls_help))
                         }
-                        status.transcript?.let { text ->
-                            Text(stringResource(R.string.companion_copy_warning))
+                        if (!status.busy) status.pendingText?.let { text ->
+                            Text(stringResource(if (status.message == "copy_failed") R.string.companion_copy_failed else R.string.companion_copy_warning))
                             SelectionContainer { Text(text) }
-                            Button(onClick = {
-                                getSystemService(ClipboardManager::class.java).setPrimaryClip(
-                                    ClipData.newPlainText(getString(R.string.companion_title), text))
-                            }) { Text(stringResource(R.string.companion_copy)) }
+                            Button(onClick = coordinator::copyPending) { Text(stringResource(R.string.companion_copy)) }
                         }
                         if (status.busy) TextButton(onClick = { coordinator.cancel() }) {
                             Text(stringResource(R.string.companion_cancel))
                         }
-                        if (!status.busy && status.transcript == null) Button(onClick = {
+                        if (!status.busy) Button(onClick = {
                             controls = false
                             attempted = false
                             maybeStart()
